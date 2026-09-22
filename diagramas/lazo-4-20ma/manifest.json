@@ -1,0 +1,54 @@
+{
+  "id": "lazo-4-20ma",
+  "titulo": "Lazo de corriente 4–20 mA",
+  "conceptos": [
+    {
+      "titulo": "¿Qué es?",
+      "texto": "Un transmisor convierte una variable física (nivel, presión, temperatura, caudal) en una corriente eléctrica proporcional, entre 4 y 20 mA, que viaja por un par de cables hasta el controlador o indicador."
+    },
+    {
+      "titulo": "¿Por qué empezar en 4 mA y no en 0 mA?",
+      "texto": "Dejar un 'cero vivo' en 4 mA permite distinguir el 0% real de una falla: si el cable se corta o el transmisor se queda sin alimentación, la corriente cae a 0 mA, y el sistema puede detectar y alarmar esa condición en vez de confundirla con una lectura válida de 0%."
+    },
+    {
+      "titulo": "Aplicaciones",
+      "texto": "Es el estándar de la industria de procesos (petróleo, minería, agua, alimentos) para enviar señales analógicas de sensores a PLCs, DCS y controladores, incluso a cientos de metros de distancia, porque la señal en corriente no se degrada con la resistencia del cable como sí ocurre con una señal en voltaje."
+    }
+  ],
+  "ejercicios": [
+    {
+      "id": "ex1",
+      "tipo": "numerica",
+      "enunciado": "Ajusta el sensor a 65% de la variable de proceso con el control deslizante. ¿Qué corriente (en mA) debe entregar el transmisor? Escribe el valor que muestra el medidor.",
+      "objetivo_pv": 65,
+      "tolerancia": 0.3,
+      "puntaje": 1
+    },
+    {
+      "id": "ex2",
+      "tipo": "numerica",
+      "enunciado": "Ahora ajusta el sensor a 20% de la variable de proceso. ¿Qué corriente debe entregar el transmisor?",
+      "objetivo_pv": 20,
+      "tolerancia": 0.3,
+      "puntaje": 1
+    },
+    {
+      "id": "ex3",
+      "tipo": "opcion",
+      "enunciado": "Si un cable del lazo se corta, ¿qué corriente verá el controlador?",
+      "opciones": [
+        { "id": "a", "texto": "0 mA" },
+        { "id": "b", "texto": "4 mA" },
+        { "id": "c", "texto": "20 mA" },
+        { "id": "d", "texto": "Sigue mostrando el último valor" }
+      ],
+      "correcta": "a",
+      "puntaje": 1
+    },
+    {
+      "id": "ex4",
+      "tipo": "abierta",
+      "enunciado": "En tus propias palabras: ¿por qué se prefiere una escala 4–20 mA en vez de 0–20 mA en instrumentación industrial? Menciona una ventaja práctica."
+    }
+  ]
+}

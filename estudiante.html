@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Unirme a la clase</title>
+<link rel="stylesheet" href="estilos.css" />
+</head>
+<body>
+<header class="app">
+  <div>
+    <h1 id="titulo-sesion">Unirme a la clase</h1>
+    <div class="subtitulo" id="subtitulo-sesion">Ingresa tu código de sesión</div>
+  </div>
+</header>
+<main>
+  <section id="form-ingreso" class="tarjeta">
+    <h2>Datos para entrar</h2>
+    <label for="in-codigo">Código de la sesión</label>
+    <input id="in-codigo" type="text" placeholder="Ej: ABC123" maxlength="10" />
+    <label for="in-nombre">Nombre completo</label>
+    <input id="in-nombre" type="text" placeholder="Nombre y apellido" />
+    <label for="in-carnet">Número de carnet</label>
+    <input id="in-carnet" type="text" placeholder="Ej: 8452193" />
+    <button id="btn-unirse">Ingresar</button>
+    <p id="msg-ingreso" class="mensaje"></p>
+  </section>
+
+  <section id="contenido-clase" style="display:none;">
+    <div class="tarjeta">
+      <h2>Conceptos</h2>
+      <div id="conceptos"></div>
+    </div>
+    <div class="tarjeta">
+      <h2>Diagrama interactivo</h2>
+      <div id="diagrama"></div>
+    </div>
+    <div class="tarjeta">
+      <h2>Ejercicios</h2>
+      <div id="ejercicios"></div>
+    </div>
+  </section>
+</main>
+
+<script type="module">
+import { asegurarSesionAuth, unirseASesion, enviarRespuesta, misRespuestas } from "./js/supabaseClient.js";
+import { cargarManifest, cargarModulo } from "./js/registry.js";
+import { evaluarNumerica, evaluarOpcion, empaquetarAbierta } from "./js/evaluacion.js";
+
+const $ = (sel) => document.querySelector(sel);
+const params = new URLSearchParams(location.search);
+
+let estado = { participanteId: null, manifest: null, diagramaInstancia: null };
+
+async function precargarDesdeUrl() {
+  const codigo = params.get("s");
+  if (codigo) $("#in-codigo").value = codigo.toUpperCase();
+  const guardado = sessionStorage.getItem("participante");
+  if (guardado) {
+    try {
+      const datos = JSON.parse(guardado);
+      if (!codigo || datos.codigo === codigo.toUpperCase()) {
+        await entrarConDatos(datos);
+        return;
+      }
+    } catch (_) { /* ignorar */ }
+  }
+}
+
+async function entrar() {
+  const codigo = $("#in-codigo").value.trim().toUpperCase();
+  const nombre = $("#in-nombre").value.trim();
+  const carnet = $("#in-carnet").value.trim();
+  const msg = $("#msg-ingreso");
+  if (!codigo || !nombre || !carnet) {
+    msg.textContent = "Completa todos los campos.";
+    msg.className = "mensaje error";
+    return;
+  }
+  msg.textContent = "Ingresando...";
+  msg.className = "mensaje";
+  try {
+    await asegurarSesionAuth();
+    const res = await unirseASesion(codigo, nombre, carnet);
+    const datos = { ...res, codigo };
+    sessionStorage.setItem("participante", JSON.stringify(datos));
+    await entrarConDatos(datos);
+  } catch (e) {
+    msg.textContent = e.message || "No se pudo ingresar. Verifica el código.";
+    msg.className = "mensaje error";
+  }
+}
+
+async function entrarConDatos(datos) {
+  await asegurarSesionAuth();
+  estado.participanteId = datos.participante_id;
+  $("#titulo-sesion").textContent = datos.titulo;
+  $("#subtitulo-sesion").textContent = `Bienvenido/a, ${datos.nombre}`;
+  $("#form-ingreso").style.display = "none";
+  $("#contenido-clase").style.display = "block";
+
+  const manifest = await cargarManifest(datos.diagrama_id);
+  estado.manifest = manifest;
+  pintarConceptos(manifest);
+
+  const mod = await cargarModulo(datos.diagrama_id);
+  estado.diagramaInstancia = mod.montar($("#diagrama"), {
+    manifest,
+    onCambio: (e) => (estado.ultimoEstadoDiagrama = e),
+  });
+
+  const previas = await misRespuestas(estado.participanteId);
+  pintarEjercicios(manifest, previas);
+}
+
+function pintarConceptos(manifest) {
+  const cont = $("#conceptos");
+  cont.innerHTML = manifest.conceptos
+    .map((c) => `<div class="concepto"><h3>${c.titulo}</h3><p>${c.texto}</p></div>`)
+    .join("");
+}
+
+function badge(estadoTxt) {
+  const mapa = { ok: ["ok", "Correcto"], mal: ["mal", "Revisar"], pend: ["pend", "En revisión"], vacio: ["vacio", "Sin enviar"] };
+  const [clase, texto] = mapa[estadoTxt] || mapa.vacio;
+  return `<span class="estado-badge ${clase}">${texto}</span>`;
+}
+
+function pintarEjercicios(manifest, previas) {
+  const cont = $("#ejercicios");
+  const porId = Object.fromEntries((previas || []).map((r) => [r.ejercicio_id, r]));
+
+  cont.innerHTML = manifest.ejercicios
+    .map((ej) => {
+      const previa = porId[ej.id];
+      let estadoTxt = "vacio";
+      if (previa) {
+        if (ej.tipo === "abierta") estadoTxt = previa.puntaje == null ? "pend" : previa.correcta ? "ok" : "mal";
+        else estadoTxt = previa.correcta ? "ok" : "mal";
+      }
+
+      if (ej.tipo === "numerica") {
+        return `
+        <div class="ejercicio" data-id="${ej.id}" data-tipo="numerica">
+          <p class="enunciado">${ej.enunciado} ${badge(estadoTxt)}</p>
+          <input type="text" inputmode="decimal" placeholder="Tu respuesta en mA" value="${previa ? JSON.stringify(previa.respuesta.valor ?? "") : ""}" class="resp-input" />
+          <button class="btn-enviar secundario">Enviar</button>
+          <p class="mensaje resultado"></p>
+        </div>`;
+      }
+      if (ej.tipo === "opcion") {
+        const marcada = previa?.respuesta?.opcion;
+        return `
+        <div class="ejercicio" data-id="${ej.id}" data-tipo="opcion">
+          <p class="enunciado">${ej.enunciado} ${badge(estadoTxt)}</p>
+          <div class="opciones">
+            ${ej.opciones
+              .map(
+                (o) => `<label><input type="radio" name="op-${ej.id}" value="${o.id}" ${marcada === o.id ? "checked" : ""}/> ${o.texto}</label>`
+              )
+              .join("")}
+          </div>
+          <button class="btn-enviar secundario">Enviar</button>
+          <p class="mensaje resultado"></p>
+        </div>`;
+      }
+      // abierta
+      return `
+      <div class="ejercicio" data-id="${ej.id}" data-tipo="abierta">
+        <p class="enunciado">${ej.enunciado} ${badge(estadoTxt)}</p>
+        <textarea class="resp-input" placeholder="Escribe tu respuesta...">${previa?.respuesta?.texto ?? ""}</textarea>
+        <button class="btn-enviar secundario">Enviar</button>
+        <p class="mensaje resultado"></p>
+      </div>`;
+    })
+    .join("");
+
+  cont.querySelectorAll(".ejercicio").forEach((div) => {
+    div.querySelector(".btn-enviar").addEventListener("click", () => enviarEjercicio(div, manifest));
+  });
+}
+
+async function enviarEjercicio(div, manifest) {
+  const id = div.dataset.id;
+  const tipo = div.dataset.tipo;
+  const ej = manifest.ejercicios.find((e) => e.id === id);
+  const resultadoEl = div.querySelector(".resultado");
+  resultadoEl.textContent = "Enviando...";
+  resultadoEl.className = "mensaje resultado";
+
+  try {
+    let payload = { participanteId: estado.participanteId, ejercicioId: id, tipo };
+
+    if (tipo === "numerica") {
+      const valor = Number(div.querySelector(".resp-input").value);
+      const esperado = 4 + (ej.objetivo_pv / 100) * 16;
+      const { correcta, puntaje } = evaluarNumerica(valor, esperado, ej.tolerancia, ej.puntaje);
+      payload = { ...payload, respuesta: { valor }, correcta, puntaje };
+      resultadoEl.textContent = correcta ? "¡Correcto!" : "No coincide, revisa el diagrama y vuelve a intentar.";
+      resultadoEl.className = `mensaje resultado ${correcta ? "exito" : "error"}`;
+    } else if (tipo === "opcion") {
+      const marcada = div.querySelector("input[type=radio]:checked");
+      if (!marcada) throw new Error("Selecciona una opción.");
+      const { correcta, puntaje } = evaluarOpcion(marcada.value, ej.correcta, ej.puntaje);
+      payload = { ...payload, respuesta: { opcion: marcada.value }, correcta, puntaje };
+      resultadoEl.textContent = correcta ? "¡Correcto!" : "Esa no es, vuelve a intentar.";
+      resultadoEl.className = `mensaje resultado ${correcta ? "exito" : "error"}`;
+    } else {
+      const texto = div.querySelector("textarea").value.trim();
+      if (!texto) throw new Error("Escribe una respuesta.");
+      payload = { ...payload, respuesta: empaquetarAbierta(texto), correcta: null, puntaje: null };
+      resultadoEl.textContent = "Enviado. Tu profesor la revisará.";
+      resultadoEl.className = "mensaje resultado exito";
+    }
+
+    await enviarRespuesta(payload);
+  } catch (e) {
+    resultadoEl.textContent = e.message || "No se pudo enviar.";
+    resultadoEl.className = "mensaje resultado error";
+  }
+}
+
+$("#btn-unirse").addEventListener("click", entrar);
+precargarDesdeUrl();
+</script>
+</body>
+</html>

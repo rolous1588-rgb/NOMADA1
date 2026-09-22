@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Panel del docente</title>
+<link rel="stylesheet" href="estilos.css" />
+</head>
+<body>
+<header class="app">
+  <div>
+    <h1>Panel del docente</h1>
+    <div class="subtitulo" id="subtitulo">Crea una sesión y comparte el código con tus estudiantes</div>
+  </div>
+  <div id="usuario-actual"></div>
+</header>
+<main>
+
+  <section id="login" class="tarjeta">
+    <h2>Ingresar</h2>
+    <label for="in-email">Correo electrónico</label>
+    <input id="in-email" type="email" placeholder="tu-correo@umsa.bo" />
+    <label for="in-password">Contraseña</label>
+    <input id="in-password" type="password" placeholder="Mínimo 6 caracteres" />
+    <div class="control-fila">
+      <button id="btn-login">Iniciar sesión</button>
+      <button id="btn-crear-cuenta" class="secundario">Crear cuenta (primera vez)</button>
+    </div>
+    <p id="msg-login" class="mensaje"></p>
+  </section>
+
+  <section id="panel" style="display:none;">
+
+    <div class="tarjeta" id="crear-sesion">
+      <h2>Nueva sesión de clase</h2>
+      <label for="in-titulo">Título de la clase</label>
+      <input id="in-titulo" type="text" placeholder="Ej: Instrumentación industrial - Sesión 1" />
+      <label for="in-diagrama">Diagrama</label>
+      <select id="in-diagrama"></select>
+      <button id="btn-crear">Crear sesión y generar código</button>
+      <p id="msg-crear" class="mensaje"></p>
+    </div>
+
+    <div class="tarjeta" id="sesion-activa" style="display:none;">
+      <h2 id="titulo-activa"></h2>
+      <div class="qr-caja">
+        <div>
+          <div class="codigo-grande" id="codigo-activo"></div>
+          <div class="link-estudiante" id="link-activo"></div>
+        </div>
+        <img id="qr-img" width="180" height="180" alt="Código QR para unirse" />
+      </div>
+      <p>
+        <button id="btn-proyectar" class="secundario">Ver diagrama para compartir en Zoom</button>
+        <button id="btn-cerrar-sesion" class="peligro">Cerrar sesión de clase</button>
+      </p>
+    </div>
+
+    <div class="tarjeta" id="proyeccion" style="display:none;">
+      <h2>Vista para proyectar (compártela por Zoom)</h2>
+      <div id="diagrama-proyeccion"></div>
+      <div id="conceptos-proyeccion"></div>
+    </div>
+
+    <div class="tarjeta" id="pizarra" style="display:none;">
+      <h2>Pizarra en vivo</h2>
+      <p class="mensaje">
+        <button id="btn-exportar" class="secundario">Exportar CSV</button>
+      </p>
+      <div style="overflow-x:auto;">
+        <table id="tabla-pizarra">
+          <thead><tr id="fila-encabezado"></tr></thead>
+          <tbody id="cuerpo-pizarra"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="tarjeta" id="calificar-abiertas" style="display:none;">
+      <h2>Respuestas abiertas por calificar</h2>
+      <div id="lista-abiertas"></div>
+    </div>
+
+  </section>
+</main>
+
+<script type="module">
+import { supabase, iniciarSesionDocente, crearCuentaDocente, generarCodigoSesion,
+         crearSesionClase, cerrarSesionClase, listarParticipantes, listarRespuestas,
+         calificarRespuesta, suscribirCambiosSesion } from "./js/supabaseClient.js";
+import { DIAGRAMAS, cargarManifest, cargarModulo } from "./js/registry.js";
+
+const $ = (sel) => document.querySelector(sel);
+let sesionActual = null;
+let manifestActual = null;
+let cancelarSuscripcion = null;
+let instanciaProyeccion = null;
+
+function llenarSelectDiagramas() {
+  const sel = $("#in-diagrama");
+  sel.innerHTML = Object.entries(DIAGRAMAS)
+    .map(([id, info]) => `<option value="${id}">${info.nombre}</option>`)
+    .join("");
+}
+
+async function revisarSesionAuth() {
+  const { data } = await supabase.auth.getSession();
+  if (data.session && !data.session.user.is_anonymous) {
+    $("#login").style.display = "none";
+    $("#panel").style.display = "block";
+    $("#usuario-actual").textContent = data.session.user.email || "";
+    llenarSelectDiagramas();
+  } else if (data.session && data.session.user.is_anonymous) {
+    // Habia una sesion anonima de estudiante en este navegador: hay que
+    // cerrarla para poder iniciar sesion como docente con correo.
+    await supabase.auth.signOut();
+  }
+}
+
+function leerCredenciales() {
+  return { email: $("#in-email").value.trim(), password: $("#in-password").value };
+}
+
+$("#btn-crear-cuenta").addEventListener("click", async () => {
+  const { email, password } = leerCredenciales();
+  const msg = $("#msg-login");
+  if (!email || !password) { msg.textContent = "Completa correo y contraseña."; msg.className = "mensaje error"; return; }
+  if (password.length < 6) { msg.textContent = "La contraseña debe tener al menos 6 caracteres."; msg.className = "mensaje error"; return; }
+  msg.textContent = "Creando cuenta...";
+  msg.className = "mensaje";
+  try {
+    await crearCuentaDocente(email, password);
+    msg.textContent = "Cuenta creada. Entrando...";
+    msg.className = "mensaje exito";
+    await revisarSesionAuth();
+  } catch (e) {
+    msg.textContent = e.message || "No se pudo crear la cuenta.";
+    msg.className = "mensaje error";
+  }
+});
+
+$("#btn-login").addEventListener("click", async () => {
+  const { email, password } = leerCredenciales();
+  const msg = $("#msg-login");
+  if (!email || !password) { msg.textContent = "Completa correo y contraseña."; msg.className = "mensaje error"; return; }
+  msg.textContent = "Ingresando...";
+  msg.className = "mensaje";
+  try {
+    await iniciarSesionDocente(email, password);
+    await revisarSesionAuth();
+  } catch (e) {
+    msg.textContent = e.message || "Correo o contraseña incorrectos.";
+    msg.className = "mensaje error";
+  }
+});
+
+$("#btn-crear").addEventListener("click", async () => {
+  const titulo = $("#in-titulo").value.trim();
+  const diagramaId = $("#in-diagrama").value;
+  const msg = $("#msg-crear");
+  if (!titulo) { msg.textContent = "Escribe un título."; msg.className = "mensaje error"; return; }
+  msg.textContent = "Creando...";
+  msg.className = "mensaje";
+  try {
+    const codigo = generarCodigoSesion();
+    const sesion = await crearSesionClase({ titulo, diagramaId, codigo });
+    await activarSesion(sesion);
+    msg.textContent = "";
+  } catch (e) {
+    msg.textContent = e.message || "No se pudo crear la sesión.";
+    msg.className = "mensaje error";
+  }
+});
+
+async function activarSesion(sesion) {
+  sesionActual = sesion;
+  manifestActual = await cargarManifest(sesion.diagrama_id);
+
+  $("#crear-sesion").style.display = "none";
+  $("#sesion-activa").style.display = "block";
+  $("#pizarra").style.display = "block";
+  $("#calificar-abiertas").style.display = "block";
+
+  $("#titulo-activa").textContent = sesion.titulo;
+  $("#codigo-activo").textContent = sesion.codigo;
+  const url = `${location.origin}${location.pathname.replace("docente.html", "")}estudiante.html?s=${sesion.codigo}`;
+  $("#link-activo").textContent = url;
+  $("#qr-img").src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(url)}`;
+
+  construirEncabezadoPizarra();
+  await refrescarPizarra();
+
+  if (cancelarSuscripcion) cancelarSuscripcion();
+  cancelarSuscripcion = suscribirCambiosSesion(sesion.id, () => refrescarPizarra());
+}
+
+function construirEncabezadoPizarra() {
+  const fila = $("#fila-encabezado");
+  fila.innerHTML =
+    `<th>Estudiante</th><th>Carnet</th>` +
+    manifestActual.ejercicios.map((e) => `<th>${e.id}</th>`).join("") +
+    `<th>Puntaje</th>`;
+}
+
+function celdaEstado(r, ej) {
+  if (!r) return `<span class="estado-badge vacio">—</span>`;
+  if (ej.tipo === "abierta") {
+    if (r.puntaje == null) return `<span class="estado-badge pend">Por revisar</span>`;
+    return `<span class="estado-badge ${r.correcta ? "ok" : "mal"}">${r.puntaje} pt</span>`;
+  }
+  return `<span class="estado-badge ${r.correcta ? "ok" : "mal"}">${r.correcta ? "OK" : "X"}</span>`;
+}
+
+async function refrescarPizarra() {
+  if (!sesionActual) return;
+  const [participantes, respuestas] = await Promise.all([
+    listarParticipantes(sesionActual.id),
+    listarRespuestas(sesionActual.id),
+  ]);
+
+  const cuerpo = $("#cuerpo-pizarra");
+  cuerpo.innerHTML = participantes
+    .map((p) => {
+      const propias = respuestas.filter((r) => r.participante_id === p.id);
+      const porEjercicio = Object.fromEntries(propias.map((r) => [r.ejercicio_id, r]));
+      const puntajeTotal = propias.reduce((acc, r) => acc + (Number(r.puntaje) || 0), 0);
+      const celdas = manifestActual.ejercicios.map((ej) => `<td>${celdaEstado(porEjercicio[ej.id], ej)}</td>`).join("");
+      return `<tr><td>${p.nombre}</td><td>${p.carnet}</td>${celdas}<td>${puntajeTotal}</td></tr>`;
+    })
+    .join("");
+
+  const abiertasEl = $("#lista-abiertas");
+  const pendientes = respuestas.filter((r) => r.tipo === "abierta" && r.puntaje == null);
+  if (pendientes.length === 0) {
+    abiertasEl.innerHTML = `<p class="mensaje">No hay respuestas abiertas pendientes.</p>`;
+  } else {
+    abiertasEl.innerHTML = pendientes
+      .map((r) => {
+        const p = participantes.find((x) => x.id === r.participante_id);
+        return `
+        <div class="ejercicio">
+          <p class="enunciado"><strong>${p ? p.nombre : "?"}</strong> — ${r.ejercicio_id}</p>
+          <p class="mensaje">${(r.respuesta && r.respuesta.texto) || ""}</p>
+          <div class="control-fila">
+            <button data-id="${r.id}" data-puntaje="1" class="btn-calificar">Correcta (1 pt)</button>
+            <button data-id="${r.id}" data-puntaje="0.5" class="btn-calificar secundario">Parcial (0.5 pt)</button>
+            <button data-id="${r.id}" data-puntaje="0" class="btn-calificar peligro">Incorrecta (0 pt)</button>
+          </div>
+        </div>`;
+      })
+      .join("");
+    abiertasEl.querySelectorAll(".btn-calificar").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await calificarRespuesta(btn.dataset.id, Number(btn.dataset.puntaje), null);
+        await refrescarPizarra();
+      });
+    });
+  }
+}
+
+$("#btn-exportar").addEventListener("click", async () => {
+  if (!sesionActual) return;
+  const [participantes, respuestas] = await Promise.all([
+    listarParticipantes(sesionActual.id),
+    listarRespuestas(sesionActual.id),
+  ]);
+  const encabezado = ["nombre", "carnet", ...manifestActual.ejercicios.map((e) => e.id), "puntaje_total"];
+  const filas = participantes.map((p) => {
+    const propias = respuestas.filter((r) => r.participante_id === p.id);
+    const porEjercicio = Object.fromEntries(propias.map((r) => [r.ejercicio_id, r]));
+    const total = propias.reduce((acc, r) => acc + (Number(r.puntaje) || 0), 0);
+    const celdas = manifestActual.ejercicios.map((ej) => {
+      const r = porEjercicio[ej.id];
+      if (!r) return "";
+      if (ej.tipo === "abierta") return r.puntaje == null ? "pendiente" : String(r.puntaje);
+      return r.correcta ? "OK" : "X";
+    });
+    return [p.nombre, p.carnet, ...celdas, total];
+  });
+  const csv = [encabezado, ...filas].map((f) => f.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${sesionActual.codigo}-resultados.csv`;
+  a.click();
+});
+
+$("#btn-proyectar").addEventListener("click", async () => {
+  const cont = $("#proyeccion");
+  const visible = cont.style.display === "block";
+  if (visible) {
+    if (instanciaProyeccion) instanciaProyeccion.destruir();
+    cont.style.display = "none";
+    return;
+  }
+  cont.style.display = "block";
+  const mod = await cargarModulo(sesionActual.diagrama_id);
+  instanciaProyeccion = mod.montarSoloLectura($("#diagrama-proyeccion"));
+  $("#conceptos-proyeccion").innerHTML = manifestActual.conceptos
+    .map((c) => `<div class="concepto"><h3>${c.titulo}</h3><p>${c.texto}</p></div>`)
+    .join("");
+});
+
+$("#btn-cerrar-sesion").addEventListener("click", async () => {
+  if (!sesionActual) return;
+  if (!confirm("¿Cerrar esta sesión de clase? Los estudiantes ya no podrán ingresar.")) return;
+  await cerrarSesionClase(sesionActual.id);
+  if (cancelarSuscripcion) cancelarSuscripcion();
+  sesionActual = null;
+  $("#sesion-activa").style.display = "none";
+  $("#pizarra").style.display = "none";
+  $("#calificar-abiertas").style.display = "none";
+  $("#proyeccion").style.display = "none";
+  $("#crear-sesion").style.display = "block";
+});
+
+revisarSesionAuth();
+</script>
+</body>
+</html>
